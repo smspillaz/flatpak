@@ -4278,6 +4278,44 @@ flatpak_extension_matches_reason (const char *extension_id,
   return FALSE;
 }
 
+static void
+find_unmaintained_files_dir_for_extension (const char  *kind,
+                                           const char  *extension,
+                                           const char  *arch,
+                                           const char  *branch,
+                                           GFile      **out_files,
+                                           char       **out_ref,
+                                           GFile      **out_deploy_dir,
+                                           gboolean    *out_is_unmaintained)
+{
+  g_autofree char *ref = NULL;
+  g_autoptr(GFile) files = NULL;
+  g_autoptr(GFile) deploy_dir = NULL;
+  gboolean is_unmaintained = FALSE;
+
+  g_return_if_fail (out_files != NULL);
+  g_return_if_fail (out_is_unmaintained != NULL);
+  g_return_if_fail (out_ref != NULL);
+
+  ref = g_build_filename (kind, extension, arch, branch, NULL);
+
+  files = flatpak_find_unmaintained_extension_dir_if_exists (extension, arch, branch, NULL);
+
+  if (files == NULL)
+    {
+      deploy_dir = flatpak_find_deploy_dir_for_ref (ref, NULL, NULL, NULL);
+      if (deploy_dir)
+        files = g_file_get_child (deploy_dir, "files");
+    }
+  else
+    is_unmaintained = TRUE;
+
+  *out_ref = g_steal_pointer (&ref);
+  *out_files = g_steal_pointer (&files);
+  *out_deploy_dir = g_steal_pointer (&deploy_dir);
+  *out_is_unmaintained = is_unmaintained;
+}
+
 static GList *
 add_extension (GKeyFile   *metakey,
                const char *group,
@@ -4302,26 +4340,45 @@ add_extension (GKeyFile   *metakey,
   g_autofree char *subdir_suffix = g_key_file_get_string (metakey, group,
                                                           FLATPAK_METADATA_KEY_SUBDIRECTORY_SUFFIX,
                                                           NULL);
-  g_autofree char *ref = NULL;
+  g_autofree char *app_ref = NULL;
+  g_autofree char *runtime_ref = NULL;
+  const char *ref = NULL;
   gboolean is_unmaintained = FALSE;
   g_autoptr(GFile) files = NULL;
-  g_autoptr(GFile) deploy_dir = NULL;
+  g_autoptr(GFile) runtime_deploy_dir = NULL;
+  g_autoptr(GFile) app_deploy_dir = NULL;
+  GFile *deploy_dir = NULL;
 
   if (directory == NULL)
     return res;
 
-  ref = g_build_filename ("runtime", extension, arch, branch, NULL);
+  /* First, try finding an extension */
+  find_unmaintained_files_dir_for_extension ("runtime",
+                                             extension,
+                                             arch,
+                                             branch,
+                                             &files,
+                                             &runtime_ref,
+                                             &runtime_deploy_dir,
+                                             &is_unmaintained);
 
-  files = flatpak_find_unmaintained_extension_dir_if_exists (extension, arch, branch, NULL);
+  ref = runtime_ref;
+  deploy_dir = runtime_deploy_dir;
 
+  /* If that failed, try finding an app */
   if (files == NULL)
     {
-      deploy_dir = flatpak_find_deploy_dir_for_ref (ref, NULL, NULL, NULL);
-      if (deploy_dir)
-        files = g_file_get_child (deploy_dir, "files");
+      find_unmaintained_files_dir_for_extension ("app",
+                                                 extension,
+                                                 arch,
+                                                 branch,
+                                                 &files,
+                                                 &app_ref,
+                                                 &app_deploy_dir,
+                                                 &is_unmaintained);
+      ref = app_ref;
+      deploy_dir = app_deploy_dir;
     }
-  else
-    is_unmaintained = TRUE;
 
   /* Prefer a full extension (org.freedesktop.Locale) over subdirectory ones (org.freedesktop.Locale.sv) */
   if (files != NULL)
@@ -4340,6 +4397,7 @@ add_extension (GKeyFile   *metakey,
       g_auto(GStrv) unmaintained_refs = NULL;
       int j;
 
+      /* Note that for subdirectories we only support runtimes as extensions */
       refs = flatpak_list_deployed_refs ("runtime", prefix, arch, branch,
                                          NULL, NULL);
       for (j = 0; refs != NULL && refs[j] != NULL; j++)
