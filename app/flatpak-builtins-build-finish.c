@@ -58,19 +58,6 @@ static GOptionEntry options[] = {
 };
 
 static gboolean
-name_matches_one_prefix (const char         *name,
-                         const char * const *prefixes)
-{
-  const char * const *iter = prefixes;
-
-  for (; *iter != NULL; ++iter)
-    if (flatpak_has_name_prefix (name, *iter))
-      return TRUE;
-
-  return FALSE;
-}
-
-static gboolean
 export_dir (int                  source_parent_fd,
             const char          *source_name,
             const char          *source_relpath,
@@ -148,7 +135,7 @@ export_dir (int                  source_parent_fd,
 
           g_message ("Checking if %s matches one prefix in %s", dent->d_name, g_strjoinv (" ", (char **) permissible_prefixes));
 
-          if (!name_matches_one_prefix (dent->d_name, permissible_prefixes))
+          if (!flatpak_name_matches_one_prefix (dent->d_name, permissible_prefixes))
             {
               g_print (_("Not exporting %s, wrong prefix\n"), source_printable);
               continue;

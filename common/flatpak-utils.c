@@ -793,6 +793,19 @@ flatpak_has_name_prefix (const char *string,
     !is_valid_name_character (*rest, FALSE);
 }
 
+gboolean
+flatpak_name_matches_one_prefix (const char         *name,
+                                 const char * const *prefixes)
+{
+  const char * const *iter = prefixes;
+
+  for (; *iter != NULL; ++iter)
+    if (flatpak_has_name_prefix (name, *iter))
+      return TRUE;
+
+  return FALSE;
+}
+
 static gboolean
 is_valid_initial_branch_character (gint c)
 {

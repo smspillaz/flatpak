@@ -145,6 +145,8 @@ gboolean flatpak_summary_lookup_ref (GVariant    *summary,
 
 gboolean flatpak_has_name_prefix (const char *string,
                                   const char *name);
+gboolean flatpak_name_matches_one_prefix (const char         *name,
+                                          const char * const *prefixes);
 gboolean flatpak_is_valid_name (const char *string,
                                 GError **error);
 gboolean flatpak_is_valid_branch (const char *string,
