@@ -4693,6 +4693,77 @@ out:
   return ret;
 }
 
+static GStrv
+enumerate_owned_dbus_names (GKeyFile  *metakey,
+                            GError   **error)
+{
+  g_autoptr(GError) local_error = NULL;
+  g_autoptr(GPtrArray) owned_names = g_ptr_array_new_with_free_func (g_free);
+  g_auto(GStrv) keys = g_key_file_get_keys (metakey,
+                                            FLATPAK_METADATA_GROUP_SESSION_BUS_POLICY,
+                                            NULL,
+                                            &local_error);
+  GStrv iter = keys;
+
+  if (keys == NULL)
+    {
+      /* No group, return an empty strv */
+      if (g_error_matches (local_error,
+                           G_KEY_FILE_ERROR,
+                           G_KEY_FILE_ERROR_GROUP_NOT_FOUND))
+        {
+          g_ptr_array_add (owned_names, NULL);
+          return (GStrv) g_ptr_array_free (owned_names, FALSE);
+        }
+
+      g_propagate_error (error, g_steal_pointer (&local_error));
+      return NULL;
+    }
+
+  for (; *iter != NULL; ++iter)
+    {
+      g_autofree char *value = g_key_file_get_string (metakey,
+                                                      FLATPAK_METADATA_GROUP_SESSION_BUS_POLICY,
+                                                      *iter,
+                                                      error);
+
+      if (value == NULL)
+        return NULL;
+
+      if (g_strcmp0 (value, "own") == 0)
+        g_ptr_array_add (owned_names, g_strdup (*iter));
+    }
+
+  g_ptr_array_add (owned_names, NULL);
+  return (GStrv) g_ptr_array_free (g_steal_pointer (&owned_names), FALSE);
+}
+
+static GStrv
+get_permissible_prefixes (GKeyFile    *metakey,
+                          const char  *source_path,
+                          const char  *app_id,
+                          GError     **error)
+{
+  g_autoptr(GPtrArray) prefixes = g_ptr_array_new_with_free_func (g_free);
+
+  g_ptr_array_add (prefixes, g_strdup (app_id));
+
+  if (g_str_has_suffix (source_path, "share/dbus-1/services"))
+    {
+      g_auto(GStrv) owned_dbus_names = enumerate_owned_dbus_names (metakey, error);
+      GStrv iter = owned_dbus_names;
+
+      if (owned_dbus_names == NULL)
+        return NULL;
+
+      for (; *iter != NULL; ++iter)
+        g_ptr_array_add (prefixes, g_strdup (*iter));
+    }
+
+  g_ptr_array_add (prefixes, NULL);
+  return (GStrv) g_ptr_array_free (g_steal_pointer (&prefixes), FALSE);
+}
+
 static gboolean
 rewrite_export_dir (const char   *app,
                     const char   *branch,
@@ -4700,6 +4771,7 @@ rewrite_export_dir (const char   *app,
                     GKeyFile     *metadata,
                     int           source_parent_fd,
                     const char   *source_name,
+                    const char   *source_path,
                     GCancellable *cancellable,
                     GError      **error)
 {
@@ -4745,16 +4817,25 @@ rewrite_export_dir (const char   *app,
 
       if (S_ISDIR (stbuf.st_mode))
         {
+          g_autofree char *path = g_build_filename (source_path, dent->d_name, NULL);
+
           if (!rewrite_export_dir (app, branch, arch, metadata,
                                    source_iter.fd, dent->d_name,
-                                   cancellable, error))
+                                   path, cancellable, error))
             goto out;
         }
       else if (S_ISREG (stbuf.st_mode))
         {
+          g_auto(GStrv) permissible_prefixes = get_permissible_prefixes (metadata,
+                                                                         source_path,
+                                                                         app,
+                                                                         error);
           g_autofree gchar *new_name = NULL;
 
-          if (!flatpak_has_name_prefix (dent->d_name, app))
+          if (permissible_prefixes == NULL)
+            return FALSE;
+
+          if (!flatpak_name_matches_one_prefix (dent->d_name, (const char * const *) permissible_prefixes))
             {
               g_warning ("Non-prefixed filename %s in app %s, removing.", dent->d_name, app);
               if (unlinkat (source_iter.fd, dent->d_name, 0) != 0 && errno != ENOENT)
@@ -4829,10 +4910,11 @@ flatpak_rewrite_export_dir (const char   *app,
                             GError      **error)
 {
   gboolean ret = FALSE;
+  const char *path = flatpak_file_get_path_cached (source);
 
   /* The fds are closed by this call */
   if (!rewrite_export_dir (app, branch, arch, metadata,
-                           AT_FDCWD, flatpak_file_get_path_cached (source),
+                           AT_FDCWD, path, path,
                            cancellable, error))
     goto out;
 
